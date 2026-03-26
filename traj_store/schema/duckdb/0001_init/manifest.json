@@ -1,4 +1,4 @@
 {
-  "description": "Create the initial writer ingest, staging, flush checkpoint, flush log, and event materialization checkpoint tables.",
+  "description": "Create the compact writer ingest/staging tables and the flush/event checkpoint metadata tables.",
   "version": "0001_init"
 }

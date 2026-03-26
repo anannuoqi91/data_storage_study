@@ -29,7 +29,7 @@ HISTORY_FILE_NAME = "_history.jsonl"
 
 DATASET_DEFINITIONS: dict[str, dict[str, Any]] = {
     "box_info": {
-        "default_schema_version": "box_info.v1",
+        "default_schema_version": "box_info.v2",
         "partitioning": ["date", "hour"],
         "compression": "zstd",
     },
@@ -465,16 +465,35 @@ def get_current_writer_version(con: duckdb.DuckDBPyConnection) -> str | None:
 
 
 def set_current_writer_version(con: duckdb.DuckDBPyConnection, *, version: str, release_id: str) -> None:
+    updated_at = utc_now_iso()
+    exists = con.execute(
+        f"""
+        SELECT count(*)
+        FROM {META_SCHEMA}.schema_version
+        WHERE scope = ?
+        """,
+        [WRITER_SCOPE],
+    ).fetchone()[0]
+
+    if exists:
+        con.execute(
+            f"""
+            UPDATE {META_SCHEMA}.schema_version
+            SET current_version = ?,
+                release_id = ?,
+                updated_at = ?
+            WHERE scope = ?
+            """,
+            [version, release_id, updated_at, WRITER_SCOPE],
+        )
+        return
+
     con.execute(
         f"""
-        INSERT INTO {META_SCHEMA}.schema_version AS sv (scope, current_version, release_id, updated_at)
-        VALUES (?, ?, ?, current_timestamp)
-        ON CONFLICT(scope) DO UPDATE
-        SET current_version = excluded.current_version,
-            release_id = excluded.release_id,
-            updated_at = current_timestamp
+        INSERT INTO {META_SCHEMA}.schema_version (scope, current_version, release_id, updated_at)
+        VALUES (?, ?, ?, ?)
         """,
-        [WRITER_SCOPE, version, release_id],
+        [WRITER_SCOPE, version, release_id, updated_at],
     )
 
 

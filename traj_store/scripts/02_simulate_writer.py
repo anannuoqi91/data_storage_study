@@ -11,6 +11,7 @@ from typing import Iterable
 
 import duckdb
 
+from ingest_common import ANGLE_SCALE, COORDINATE_SCALE, SIZE_SCALE, SPEED_SCALE
 from schema_versioning import (
     WRITER_DB_PATH,
     dataset_root,
@@ -22,6 +23,7 @@ from schema_versioning import (
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 BOX_INFO_DATASET = "box_info"
+BOX_INFO_SCHEMA_VERSION = "box_info.v2"
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,6 @@ def ensure_dirs(box_info_path: Path) -> None:
 def generate_rows(config: SimulationConfig) -> Iterable[tuple]:
     rng = random.Random(config.seed)
     total_frames = config.fps * config.sim_seconds
-    box_id = 1
 
     base_speeds = {
         100000 + vehicle_idx: 35.0 + (vehicle_idx % 7) * 8.0
@@ -75,29 +76,27 @@ def generate_rows(config: SimulationConfig) -> Iterable[tuple]:
             spindle = round((lane_id * 11.0 + frame_id * 0.7) % 360, 2)
 
             yield (
-                box_id,
                 trace_id,
                 sample_timestamp,
                 obj_type,
-                position_x,
-                position_y,
-                position_z,
-                length,
-                width,
-                height,
-                speed_kmh,
-                spindle,
+                int(round(position_x * COORDINATE_SCALE)),
+                int(round(position_y * COORDINATE_SCALE)),
+                int(round(position_z * COORDINATE_SCALE)),
+                int(round(length * SIZE_SCALE)),
+                int(round(width * SIZE_SCALE)),
+                int(round(height * SIZE_SCALE)),
+                int(round(speed_kmh * SPEED_SCALE)),
+                int(round(spindle * ANGLE_SCALE)),
                 lane_id,
                 frame_id,
             )
-            box_id += 1
 
 
 def insert_rows(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
     con.executemany(
         """
         INSERT INTO od.box_info_staging
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -145,27 +144,48 @@ def flush_to_parquet(
 
     export_sql = f"""
     COPY (
+        WITH staged AS (
+            SELECT
+                trace_id,
+                sample_timestamp,
+                obj_type,
+                position_x_mm,
+                position_y_mm,
+                position_z_mm,
+                length_mm,
+                width_mm,
+                height_mm,
+                speed_centi_kmh,
+                spindle_centi_deg,
+                lane_id,
+                frame_id,
+                strftime(make_timestamp_ms(sample_timestamp), '%Y-%m-%d') AS date,
+                strftime(make_timestamp_ms(sample_timestamp), '%H') AS hour
+            FROM od.box_info_staging
+            WHERE sample_timestamp > {flushed_before_ts}
+              AND sample_timestamp <= {safe_flush_ts}
+        )
         SELECT
-            box_id,
             trace_id,
-            sample_timestamp,
+            CAST(
+                sample_timestamp - epoch_ms(strptime(date || ' ' || hour || ':00:00', '%Y-%m-%d %H:%M:%S'))
+                AS INTEGER
+            ) AS sample_offset_ms,
             obj_type,
-            position_x,
-            position_y,
-            position_z,
-            length,
-            width,
-            height,
-            speed_kmh,
-            spindle,
+            position_x_mm,
+            position_y_mm,
+            position_z_mm,
+            length_mm,
+            width_mm,
+            height_mm,
+            speed_centi_kmh,
+            spindle_centi_deg,
             lane_id,
             frame_id,
-            strftime(make_timestamp_ms(sample_timestamp), '%Y-%m-%d') AS date,
-            strftime(make_timestamp_ms(sample_timestamp), '%H') AS hour
-        FROM od.box_info_staging
-        WHERE sample_timestamp > {flushed_before_ts}
-          AND sample_timestamp <= {safe_flush_ts}
-        ORDER BY sample_timestamp, trace_id, frame_id
+            date,
+            hour
+        FROM staged
+        ORDER BY date, hour, sample_timestamp, trace_id, frame_id
     )
     TO '{box_info_path.as_posix()}'
     (
@@ -252,7 +272,7 @@ def main() -> None:
             insert_rows(con, batch)
             batch.clear()
 
-        if (frame_id + 1) % config.flush_every_frames == 0 and row[1] == last_trace_id:
+        if (frame_id + 1) % config.flush_every_frames == 0 and row[0] == last_trace_id:
             total_flushed += flush_to_parquet(con, box_info_path, flush_lag_ms=config.flush_lag_ms)
 
     if batch:
@@ -264,7 +284,7 @@ def main() -> None:
     sample_day = datetime.fromtimestamp(config.start_ts_ms / 1000.0, tz=UTC).strftime("%Y-%m-%d")
     manifest_path = ensure_dataset_manifest(
         "box_info",
-        schema_version="box_info.v1",
+        schema_version=BOX_INFO_SCHEMA_VERSION,
         producer_script="02_simulate_writer.py",
         source_dependencies={
             "writer.duckdb": {
@@ -272,10 +292,17 @@ def main() -> None:
                 "db_path": str(WRITER_DB_PATH),
             }
         },
-        note="Updated after box_info parquet flush",
+        note="Updated after compact box_info parquet flush",
         extra={
             "active_version": box_info_version,
             "sample_day": sample_day,
+            "omits_synthetic_box_id": True,
+            "timestamp_encoding": "partition(date/hour) + sample_offset_ms",
+            "sort_keys": ["sample_offset_ms", "trace_id"],
+            "coordinate_scale": COORDINATE_SCALE,
+            "size_scale": SIZE_SCALE,
+            "speed_scale": SPEED_SCALE,
+            "angle_scale": ANGLE_SCALE,
         },
     )
     con.close()

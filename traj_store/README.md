@@ -69,9 +69,9 @@ python3 traj_store/scripts/09_compare_storage_layouts.py \
   - 主落盘改成 Parquet，压缩使用 Zstd，按 `date/hour` 分区
 - `parquet_compact_zstd`
   - 主落盘改成 Parquet，压缩使用 Zstd
-  - 文件内按 `sample_offset_ms, trace_id` 排序
+  - 文件内按 `date, hour, sample_offset_ms, trace_id, frame_id` 排序
   - 不写合成 `box_id`
-  - `sample_timestamp` 改为 `base_timestamp_ms + sample_offset_ms`
+  - `sample_timestamp` 不再整列存储，改为 `date/hour` 分区 + `sample_offset_ms`
   - `position_*`、`length/width/height`、`speed_kmh`、`spindle` 改成整数化存储
 
 ## 指标输出
@@ -119,6 +119,81 @@ traj_store/data/benchmarks/<run-id>/
 - 文件内按时间和 `trace_id` 排序，便于压缩和过滤
 - 对浮点列尽量做定点整数化，减少落盘体积
 - 只有做基线对比时，才保留 `duckdb_raw` 这类较重的布局
+
+## 当前 Box Schema
+
+当前主流程写出的 `box_info` 已经切到 `box_info.v2`，目标就是按你说的“从 schema 上先压缩”：
+
+- 移除 `box_id`
+  - 它是合成主键，分析和事件回溯基本都不会按它过滤
+- 行内不再保存完整 `sample_timestamp`
+  - Parquet 侧改成 `date/hour` 分区 + `sample_offset_ms`
+  - 需要完整时间时再通过分区起点还原
+- 浮点量统一改定点整数
+  - `position_x/y/z` -> `position_x_mm/position_y_mm/position_z_mm`
+  - `length/width/height` -> `*_mm`
+  - `speed_kmh` -> `speed_centi_kmh`
+  - `spindle` -> `spindle_centi_deg`
+- 低基数字段继续降型
+  - `obj_type` -> `UTINYINT`
+  - `lane_id` -> `UTINYINT`
+
+当前 `box_info` 的持久化字段如下：
+
+```text
+trace_id INTEGER
+sample_offset_ms INTEGER
+obj_type UTINYINT
+position_x_mm INTEGER
+position_y_mm INTEGER
+position_z_mm INTEGER
+length_mm USMALLINT
+width_mm USMALLINT
+height_mm USMALLINT
+speed_centi_kmh USMALLINT
+spindle_centi_deg USMALLINT
+lane_id UTINYINT
+frame_id INTEGER
+PARTITION BY date, hour
+```
+
+writer 内部 staging/ingest 仍然保留 `sample_timestamp BIGINT`，只是为了简化 checkpoint、刷盘边界和事件构建；真正长期落盘的 Parquet 不再保留这列。
+
+## 为什么 Schema 设计成这样
+
+这版 `box_info.v2` 不是为了“字段最全”，而是明确围绕下面三件事做取舍：
+
+- 主落盘体积要能稳定压到 GiB/day 量级，而不是随字段冗余线性膨胀
+- receiver 的热路径要把 CPU 花在真实刷盘上，而不是重复写大字段和高熵字段
+- 下游事件构建和范围查询仍然能按 `trace_id + 时间范围` 直接恢复轨迹
+
+具体原因如下：
+
+- 去掉 `box_id`
+  - 这是合成主键，不是采集侧自然字段
+  - 当前查询和事件构建更常按 `trace_id`、时间范围、分区裁剪来过滤
+  - 多存一列不仅增加每行字节数，也会增加写入时的构造成本
+- 把 `sample_timestamp` 拆成 `date/hour + sample_offset_ms`
+  - `date/hour` 负责 Parquet 分区裁剪
+  - `sample_offset_ms` 保留分区内的精确时间顺序
+  - 这样避免每行都重复存完整绝对时间戳；需要恢复完整时间时，再用分区起点加 offset 还原
+- 浮点改成定点整数
+  - 位置、尺寸、速度、角度在当前场景都有明确精度上限，毫米和百分之一单位已经足够
+  - 排序后的整数列比浮点列更容易压缩，也避免浮点编码噪声把 Parquet 压缩率拉低
+- 低基数字段继续降型
+  - `obj_type`、`lane_id`、`speed_centi_kmh`、`spindle_centi_deg` 都有明确业务上界，不需要保留成更大的通用类型
+  - 更小的物理类型会同时降低 Parquet 体积和 receiver 中间缓冲占用
+- staging 和长期落盘分离
+  - writer 内部 staging 继续保留完整 `sample_timestamp`，是为了让 checkpoint、水位推进、flush 边界和事件构建逻辑保持简单
+  - 真正长期保存的 Parquet 只保留分析和回放必需的最小字段集
+
+这套 schema 不是纯理论取舍，已经被当前基准结果验证过一轮。以 `traj_store/data/benchmarks/compact_5min_10fps_200box/` 这次 5 分钟实测为例：
+
+- `399,000` 行最终落成 `3,808,873 B`
+- `bytes_per_row_post_flush = 9.546 B/row`
+- 按 nominal `10 fps * 200 box/frame` 外推，主落盘约 `1.65 GB/day`，约 `1.54 GiB/day`
+
+也就是说，这版 schema 的核心目标不是“极限压缩”，而是在仍然保留事件构建与时间还原能力的前提下，把主落盘控制在可接受的日增量范围内。
 
 ## 数据库版本设计
 

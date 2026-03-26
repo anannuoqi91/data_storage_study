@@ -7,11 +7,34 @@ from pathlib import Path
 
 import duckdb
 
+from ingest_common import ANGLE_SCALE, COORDINATE_SCALE, SIZE_SCALE, SPEED_SCALE
 from schema_versioning import resolve_dataset_scan_glob, resolve_dataset_version_and_path
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 HOT_DB_PATH = BASE_DIR / "data" / "tmp" / "hot_day.duckdb"
+
+
+def box_info_decoded_scan_sql(*, box_info_glob: str) -> str:
+    return f"""
+        SELECT
+            trace_id,
+            epoch_ms(strptime(date || ' ' || hour || ':00:00', '%Y-%m-%d %H:%M:%S')) + sample_offset_ms AS sample_timestamp,
+            obj_type,
+            position_x_mm / CAST({COORDINATE_SCALE} AS DOUBLE) AS position_x,
+            position_y_mm / CAST({COORDINATE_SCALE} AS DOUBLE) AS position_y,
+            position_z_mm / CAST({COORDINATE_SCALE} AS DOUBLE) AS position_z,
+            length_mm / CAST({SIZE_SCALE} AS DOUBLE) AS length,
+            width_mm / CAST({SIZE_SCALE} AS DOUBLE) AS width,
+            height_mm / CAST({SIZE_SCALE} AS DOUBLE) AS height,
+            speed_centi_kmh / CAST({SPEED_SCALE} AS DOUBLE) AS speed_kmh,
+            spindle_centi_deg / CAST({ANGLE_SCALE} AS DOUBLE) AS spindle,
+            lane_id,
+            frame_id,
+            date,
+            hour
+        FROM read_parquet('{box_info_glob}', hive_partitioning = true)
+    """
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,13 +59,13 @@ def main() -> None:
 
     box_info_glob = resolve_dataset_scan_glob("box_info")
     events_glob = resolve_dataset_scan_glob("events")
+    decoded_box_info_scan = box_info_decoded_scan_sql(box_info_glob=box_info_glob)
 
     con = duckdb.connect(str(HOT_DB_PATH))
     con.execute(
         f"""
         CREATE OR REPLACE TABLE {box_table} AS
         SELECT
-            box_id,
             trace_id,
             sample_timestamp,
             obj_type,
@@ -56,7 +79,9 @@ def main() -> None:
             spindle,
             lane_id,
             frame_id
-        FROM read_parquet('{box_info_glob}', hive_partitioning = true)
+        FROM (
+            {decoded_box_info_scan}
+        ) AS box_info_decoded
         WHERE date = '{args.date}'
         """
     )

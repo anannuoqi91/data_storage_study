@@ -2,9 +2,30 @@
 --   python3 traj_store/scripts/10_schema_ctl.py status
 -- Then replace <box_info_active_glob> and <events_active_glob> below.
 
+CREATE OR REPLACE TEMP VIEW box_info_active AS
+SELECT
+    trace_id,
+    epoch_ms(strptime(date || ' ' || hour || ':00:00', '%Y-%m-%d %H:%M:%S')) + sample_offset_ms AS sample_timestamp,
+    obj_type,
+    position_x_mm / 1000.0 AS position_x,
+    position_y_mm / 1000.0 AS position_y,
+    position_z_mm / 1000.0 AS position_z,
+    length_mm / 1000.0 AS length,
+    width_mm / 1000.0 AS width,
+    height_mm / 1000.0 AS height,
+    speed_centi_kmh / 100.0 AS speed_kmh,
+    spindle_centi_deg / 100.0 AS spindle,
+    lane_id,
+    frame_id,
+    date,
+    hour
+FROM read_parquet(
+    '<box_info_active_glob>',
+    hive_partitioning = true
+);
+
 -- 1. Query one day of box_info facts.
 SELECT
-    box_id,
     trace_id,
     sample_timestamp,
     obj_type,
@@ -18,10 +39,7 @@ SELECT
     spindle,
     lane_id,
     frame_id
-FROM read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-)
+FROM box_info_active
 WHERE date = '2025-03-14'
 ORDER BY sample_timestamp, trace_id;
 
@@ -29,28 +47,19 @@ ORDER BY sample_timestamp, trace_id;
 SELECT
     count(*) AS row_cnt,
     count(DISTINCT trace_id) AS trace_cnt
-FROM read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-)
+FROM box_info_active
 WHERE date = '2025-03-14';
 
 -- 3. Point lookup by trace + frame.
 SELECT *
-FROM read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-)
+FROM box_info_active
 WHERE date = '2025-03-14'
   AND trace_id = 100123
   AND frame_id = 45;
 
 -- 4. Point lookup by trace + timestamp.
 SELECT *
-FROM read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-)
+FROM box_info_active
 WHERE date = '2025-03-14'
   AND trace_id = 100125
   AND sample_timestamp = 1741910405000;
@@ -81,10 +90,7 @@ FROM read_parquet(
     '<events_active_glob>',
     hive_partitioning = true
 ) AS e
-JOIN read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-) AS b
+JOIN box_info_active AS b
   ON b.trace_id = e.source_trace_id
  AND b.sample_timestamp = e.source_sample_timestamp
  AND b.frame_id = e.source_frame_id
@@ -97,7 +103,6 @@ ATTACH 'traj_store/data/tmp/hot_day.duckdb' AS hot;
 
 CREATE OR REPLACE TABLE hot.box_info_20250314 AS
 SELECT
-    box_id,
     trace_id,
     sample_timestamp,
     obj_type,
@@ -111,10 +116,7 @@ SELECT
     spindle,
     lane_id,
     frame_id
-FROM read_parquet(
-    '<box_info_active_glob>',
-    hive_partitioning = true
-)
+FROM box_info_active
 WHERE date = '2025-03-14';
 
 CREATE INDEX IF NOT EXISTS idx_trace_ts

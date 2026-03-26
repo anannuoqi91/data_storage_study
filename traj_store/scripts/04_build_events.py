@@ -7,6 +7,7 @@ from pathlib import Path
 
 import duckdb
 
+from ingest_common import SPEED_SCALE
 from schema_versioning import (
     WRITER_DB_PATH,
     ensure_dataset_manifest,
@@ -24,6 +25,21 @@ BOX_INFO_DATASET = "box_info"
 
 def ensure_dirs(events_path: Path) -> None:
     events_path.mkdir(parents=True, exist_ok=True)
+
+
+def box_info_decoded_scan_sql(*, box_info_glob: str, date: str) -> str:
+    return f"""
+        SELECT
+            trace_id,
+            epoch_ms(strptime(date || ' ' || hour || ':00:00', '%Y-%m-%d %H:%M:%S')) + sample_offset_ms AS sample_timestamp,
+            frame_id,
+            speed_centi_kmh / CAST({SPEED_SCALE} AS DOUBLE) AS speed_kmh,
+            lane_id,
+            date,
+            hour
+        FROM read_parquet('{box_info_glob}', hive_partitioning = true)
+        WHERE date = '{date}'
+    """
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +68,7 @@ def main() -> None:
 
     box_info_glob = resolve_dataset_scan_glob(BOX_INFO_DATASET)
     events_glob = resolve_dataset_scan_glob(EVENTS_DATASET)
+    decoded_box_info_scan = box_info_decoded_scan_sql(box_info_glob=box_info_glob, date=args.date)
 
     existing_event_scan = "SELECT NULL::VARCHAR AS event_type, NULL::BIGINT AS trace_id, NULL::BIGINT AS event_timestamp WHERE FALSE"
     if any(events_path.rglob("*.parquet")):
@@ -65,13 +82,15 @@ def main() -> None:
 
     export_sql = f"""
     COPY (
-        WITH candidate_events AS (
+        WITH box_info_decoded AS (
+            {decoded_box_info_scan}
+        ),
+        candidate_events AS (
             SELECT
                 trace_id,
                 min(sample_timestamp) AS event_timestamp
-            FROM read_parquet('{box_info_glob}', hive_partitioning = true)
-            WHERE date = '{args.date}'
-              AND speed_kmh > {args.speed_threshold}
+            FROM box_info_decoded
+            WHERE speed_kmh > {args.speed_threshold}
             GROUP BY trace_id
         ),
         source_rows AS (
@@ -83,11 +102,10 @@ def main() -> None:
                 b.lane_id,
                 b.date AS source_box_date,
                 b.hour AS source_box_hour
-            FROM read_parquet('{box_info_glob}', hive_partitioning = true) AS b
+            FROM box_info_decoded AS b
             JOIN candidate_events AS c
               ON b.trace_id = c.trace_id
              AND b.sample_timestamp = c.event_timestamp
-            WHERE b.date = '{args.date}'
         ),
         event_rows AS (
             SELECT
@@ -188,7 +206,7 @@ def main() -> None:
                 "db_path": str(WRITER_DB_PATH),
             },
         },
-        note="Updated after overspeed event materialization",
+        note="Updated after overspeed event materialization from compact box_info parquet",
         extra={
             "active_version": events_version,
             "event_type": "overspeed",
