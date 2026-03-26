@@ -11,11 +11,17 @@ from typing import Iterable
 
 import duckdb
 
+from schema_versioning import (
+    WRITER_DB_PATH,
+    dataset_root,
+    ensure_dataset_manifest,
+    ensure_writer_schema_latest,
+    resolve_dataset_version_and_path,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DB_PATH = BASE_DIR / "data" / "duckdb" / "writer.duckdb"
-BOX_INFO_PATH = BASE_DIR / "data" / "lake" / "box_info"
-INIT_SQL_PATH = BASE_DIR / "scripts" / "01_init.sql"
+BOX_INFO_DATASET = "box_info"
 
 
 @dataclass(frozen=True)
@@ -29,15 +35,12 @@ class SimulationConfig:
     seed: int = 7
 
 
-def ensure_dirs() -> None:
-    (BASE_DIR / "data" / "duckdb").mkdir(parents=True, exist_ok=True)
-    (BASE_DIR / "data" / "lake" / "box_info").mkdir(parents=True, exist_ok=True)
-    (BASE_DIR / "data" / "lake" / "events").mkdir(parents=True, exist_ok=True)
+def ensure_dirs(box_info_path: Path) -> None:
+    WRITER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    dataset_root("box_info").mkdir(parents=True, exist_ok=True)
+    dataset_root("events").mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "data" / "tmp").mkdir(parents=True, exist_ok=True)
-
-
-def apply_init_sql(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(INIT_SQL_PATH.read_text(encoding="utf-8"))
+    box_info_path.mkdir(parents=True, exist_ok=True)
 
 
 def generate_rows(config: SimulationConfig) -> Iterable[tuple]:
@@ -102,6 +105,7 @@ def insert_rows(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
 
 def flush_to_parquet(
     con: duckdb.DuckDBPyConnection,
+    box_info_path: Path,
     *,
     flush_lag_ms: int,
     force: bool = False,
@@ -163,7 +167,7 @@ def flush_to_parquet(
           AND sample_timestamp <= {safe_flush_ts}
         ORDER BY sample_timestamp, trace_id, frame_id
     )
-    TO '{BOX_INFO_PATH.as_posix()}'
+    TO '{box_info_path.as_posix()}'
     (
         FORMAT parquet,
         PARTITION_BY (date, hour),
@@ -224,9 +228,15 @@ def main() -> None:
         seed=args.seed,
     )
 
-    ensure_dirs()
-    con = duckdb.connect(str(DB_PATH))
-    apply_init_sql(con)
+    box_info_version, box_info_path = resolve_dataset_version_and_path(BOX_INFO_DATASET, create_if_missing=True)
+    ensure_dirs(box_info_path)
+
+    con = duckdb.connect(str(WRITER_DB_PATH))
+    writer_version = ensure_writer_schema_latest(
+        con,
+        note="auto-ensure latest writer schema via 02_simulate_writer.py",
+        db_path=WRITER_DB_PATH,
+    )
 
     batch: list[tuple] = []
     total_inserted = 0
@@ -243,21 +253,41 @@ def main() -> None:
             batch.clear()
 
         if (frame_id + 1) % config.flush_every_frames == 0 and row[1] == last_trace_id:
-            total_flushed += flush_to_parquet(con, flush_lag_ms=config.flush_lag_ms)
+            total_flushed += flush_to_parquet(con, box_info_path, flush_lag_ms=config.flush_lag_ms)
 
     if batch:
         insert_rows(con, batch)
 
-    total_flushed += flush_to_parquet(con, flush_lag_ms=config.flush_lag_ms, force=True)
+    total_flushed += flush_to_parquet(con, box_info_path, flush_lag_ms=config.flush_lag_ms, force=True)
 
     remaining_rows = con.execute("SELECT count(*) FROM od.box_info_staging").fetchone()[0]
     sample_day = datetime.fromtimestamp(config.start_ts_ms / 1000.0, tz=UTC).strftime("%Y-%m-%d")
+    manifest_path = ensure_dataset_manifest(
+        "box_info",
+        schema_version="box_info.v1",
+        producer_script="02_simulate_writer.py",
+        source_dependencies={
+            "writer.duckdb": {
+                "current_version": writer_version,
+                "db_path": str(WRITER_DB_PATH),
+            }
+        },
+        note="Updated after box_info parquet flush",
+        extra={
+            "active_version": box_info_version,
+            "sample_day": sample_day,
+        },
+    )
+    con.close()
 
     print(
         "\n".join(
             [
-                f"writer_db={DB_PATH}",
-                f"box_info_lake={BOX_INFO_PATH}",
+                f"writer_db={WRITER_DB_PATH}",
+                f"writer_schema_version={writer_version}",
+                f"box_info_lake={box_info_path}",
+                f"box_info_version={box_info_version}",
+                f"box_info_manifest={manifest_path}",
                 f"sample_day={sample_day}",
                 f"rows_inserted={total_inserted}",
                 f"rows_flushed={total_flushed}",

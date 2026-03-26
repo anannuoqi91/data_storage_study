@@ -18,6 +18,8 @@
   - 跑单个布局的 sender/receiver 压测
 - `scripts/09_compare_storage_layouts.py`
   - 用同一份 workload 顺序跑多种布局并输出对比表
+- `scripts/10_schema_ctl.py`
+  - 管理 `writer.duckdb` 迁移、快照回滚、以及 `box_info/events` 的 active version 指针
 
 ## 安装
 
@@ -117,3 +119,152 @@ traj_store/data/benchmarks/<run-id>/
 - 文件内按时间和 `trace_id` 排序，便于压缩和过滤
 - 对浮点列尽量做定点整数化，减少落盘体积
 - 只有做基线对比时，才保留 `duckdb_raw` 这类较重的布局
+
+## 数据库版本设计
+
+这个项目现在把“数据库版本”拆成两层管理，目标只覆盖两件事：
+
+- 可追溯
+- 可回滚
+
+不追求通用迁移框架，也不追求自动 schema 演化。
+
+### 1. `writer.duckdb` 用 migration + snapshot
+
+`writer.duckdb` 是唯一需要真正做 schema migration 的数据库文件。
+
+迁移文件放在：
+
+```text
+traj_store/schema/duckdb/<version>/
+  manifest.json
+  up.sql
+  down.sql
+```
+
+当前基线版本是：
+
+- `0001_init`
+
+运行时会在 `writer.duckdb` 内维护两张元数据表：
+
+- `traj_meta.schema_version`
+  - 当前 schema 版本
+- `traj_meta.schema_migration_history`
+  - 迁移 / bootstrap / rollback 历史
+  - 记录 `from_version`、`to_version`、`release_id`、`checksum`、`git_commit`、`snapshot_path`
+
+每次成功迁移或回滚后，都会在：
+
+```text
+traj_store/data/backups/schema/writer_duckdb/<version>/<release-id>/
+```
+
+落一份 `writer.duckdb` 快照和 `snapshot.json`。
+
+回滚不依赖复杂 `down.sql`，而是直接恢复目标版本快照。
+`down.sql` 仅作为人工参考，不作为主回滚路径。
+
+如果本地已经有旧版 `writer.duckdb`，但还没有版本元数据，脚本会在识别到当前表结构等价于 `0001_init` 时自动做一次 bootstrap，补齐版本记录和首个快照。
+
+### 2. `box_info/events` 用 version directory + active pointer
+
+Parquet lake 不做 SQL 级 migration，而是做“目录版本切换”。
+
+目录约定如下：
+
+```text
+traj_store/data/lake/box_info/
+  _current.json
+  _history.jsonl
+  v0001/
+  v0002/
+
+traj_store/data/lake/events/
+  _current.json
+  _history.jsonl
+  v0001/
+  v0002/
+```
+
+其中：
+
+- `_current.json`
+  - 当前激活版本指针
+- `_history.jsonl`
+  - 每次 activate / rollback 的切换历史
+- `<version>/_manifest.json`
+  - 当前版本的 schema、producer、依赖来源、git commit、更新时间
+
+如果还没开始做目录版本化，系统也兼容历史的 root 直写模式：
+
+- active version 会被视作 `__root__`
+- 一旦开始使用 `v0001`、`v0002` 这类目录，就必须通过 `_current.json` 指定 active version，避免 `**/*.parquet` 把多版本一起扫进去
+
+### 3. 读写规则
+
+从这版开始，主流程脚本不再直接读：
+
+```text
+traj_store/data/lake/<dataset>/**/*.parquet
+```
+
+而是先解析 active version，再只读当前版本目录：
+
+- `scripts/02_simulate_writer.py`
+  - 写 active `box_info` 版本
+  - 同步刷新该版本的 `_manifest.json`
+- `scripts/04_build_events.py`
+  - 只从 active `box_info` 版本读
+  - 只向 active `events` 版本写
+  - `events` manifest 里会记录依赖的 `box_info` 版本
+- `scripts/05_build_hot_cache.py`
+  - 只读取 active `box_info/events` 版本
+
+`03_queries.sql` 里的示例 glob 也改成了占位符，使用前先通过 `schema_ctl.py status` 拿到当前 active path。
+
+### 4. 常用操作
+
+查看状态：
+
+```bash
+python3 traj_store/scripts/10_schema_ctl.py status
+```
+
+应用 `writer.duckdb` 迁移：
+
+```bash
+python3 traj_store/scripts/10_schema_ctl.py writer-migrate
+```
+
+回滚 `writer.duckdb` 到指定版本：
+
+```bash
+python3 traj_store/scripts/10_schema_ctl.py writer-rollback --to 0001_init
+```
+
+创建并切换 lake 版本：
+
+```bash
+python3 traj_store/scripts/10_schema_ctl.py lake-activate \
+  --dataset box_info \
+  --version v0002 \
+  --create \
+  --schema-version box_info.v2
+```
+
+把 lake 指针切回旧版本：
+
+```bash
+python3 traj_store/scripts/10_schema_ctl.py lake-rollback \
+  --dataset box_info \
+  --to v0001
+```
+
+### 5. 设计取舍
+
+这套机制故意保持最小化：
+
+- `writer.duckdb` 走 migration，是因为 checkpoint 表和内部状态必须有确定版本
+- Parquet lake 走目录切换，是因为文件集最稳的回滚手段不是改 schema，而是切换 active version
+- benchmark 产物继续保留现有元数据文件，不纳入统一 migration；它们是一次性结果，更适合做 provenance，不适合做回滚对象

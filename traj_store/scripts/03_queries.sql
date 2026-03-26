@@ -1,3 +1,7 @@
+-- Resolve the active dataset globs first:
+--   python3 traj_store/scripts/10_schema_ctl.py status
+-- Then replace <box_info_active_glob> and <events_active_glob> below.
+
 -- 1. Query one day of box_info facts.
 SELECT
     box_id,
@@ -15,7 +19,7 @@ SELECT
     lane_id,
     frame_id
 FROM read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 )
 WHERE date = '2025-03-14'
@@ -26,7 +30,7 @@ SELECT
     count(*) AS row_cnt,
     count(DISTINCT trace_id) AS trace_cnt
 FROM read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 )
 WHERE date = '2025-03-14';
@@ -34,7 +38,7 @@ WHERE date = '2025-03-14';
 -- 3. Point lookup by trace + frame.
 SELECT *
 FROM read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 )
 WHERE date = '2025-03-14'
@@ -44,7 +48,7 @@ WHERE date = '2025-03-14'
 -- 4. Point lookup by trace + timestamp.
 SELECT *
 FROM read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 )
 WHERE date = '2025-03-14'
@@ -60,7 +64,7 @@ SELECT
     speed_kmh,
     source_frame_id
 FROM read_parquet(
-    'traj_store/data/lake/events/**/*.parquet',
+    '<events_active_glob>',
     hive_partitioning = true
 )
 WHERE event_type = 'overspeed'
@@ -74,11 +78,11 @@ SELECT
     e.event_timestamp,
     b.*
 FROM read_parquet(
-    'traj_store/data/lake/events/**/*.parquet',
+    '<events_active_glob>',
     hive_partitioning = true
 ) AS e
 JOIN read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 ) AS b
   ON b.trace_id = e.source_trace_id
@@ -108,7 +112,7 @@ SELECT
     lane_id,
     frame_id
 FROM read_parquet(
-    'traj_store/data/lake/box_info/**/*.parquet',
+    '<box_info_active_glob>',
     hive_partitioning = true
 )
 WHERE date = '2025-03-14';

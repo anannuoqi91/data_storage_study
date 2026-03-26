@@ -1,0 +1,4 @@
+{
+  "description": "Create the initial writer ingest, staging, flush checkpoint, flush log, and event materialization checkpoint tables.",
+  "version": "0001_init"
+}

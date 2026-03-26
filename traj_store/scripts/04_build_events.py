@@ -7,20 +7,23 @@ from pathlib import Path
 
 import duckdb
 
+from schema_versioning import (
+    WRITER_DB_PATH,
+    ensure_dataset_manifest,
+    ensure_writer_schema_latest,
+    load_dataset_manifest,
+    resolve_dataset_scan_glob,
+    resolve_dataset_version_and_path,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DB_PATH = BASE_DIR / "data" / "duckdb" / "writer.duckdb"
-BOX_INFO_GLOB = BASE_DIR / "data" / "lake" / "box_info" / "**" / "*.parquet"
-EVENTS_PATH = BASE_DIR / "data" / "lake" / "events"
-INIT_SQL_PATH = BASE_DIR / "scripts" / "01_init.sql"
+EVENTS_DATASET = "events"
+BOX_INFO_DATASET = "box_info"
 
 
-def ensure_dirs() -> None:
-    EVENTS_PATH.mkdir(parents=True, exist_ok=True)
-
-
-def apply_init_sql(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(INIT_SQL_PATH.read_text(encoding="utf-8"))
+def ensure_dirs(events_path: Path) -> None:
+    events_path.mkdir(parents=True, exist_ok=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,26 +35,32 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    ensure_dirs()
 
-    box_info_files = list((BASE_DIR / "data" / "lake" / "box_info").rglob("*.parquet"))
-    if not box_info_files:
-        raise SystemExit("No box_info parquet files found. Run 02_simulate_writer.py first.")
+    box_info_version, box_info_path = resolve_dataset_version_and_path(BOX_INFO_DATASET)
+    if not any(box_info_path.rglob("*.parquet")):
+        raise SystemExit("No box_info parquet files found in the active dataset version. Run 02_simulate_writer.py first.")
 
-    con = duckdb.connect(str(DB_PATH))
-    apply_init_sql(con)
+    events_version, events_path = resolve_dataset_version_and_path(EVENTS_DATASET, create_if_missing=True)
+    ensure_dirs(events_path)
 
-    box_info_path = BOX_INFO_GLOB.as_posix()
-    events_path = EVENTS_PATH.as_posix()
+    con = duckdb.connect(str(WRITER_DB_PATH))
+    writer_version = ensure_writer_schema_latest(
+        con,
+        note="auto-ensure latest writer schema via 04_build_events.py",
+        db_path=WRITER_DB_PATH,
+    )
+
+    box_info_glob = resolve_dataset_scan_glob(BOX_INFO_DATASET)
+    events_glob = resolve_dataset_scan_glob(EVENTS_DATASET)
 
     existing_event_scan = "SELECT NULL::VARCHAR AS event_type, NULL::BIGINT AS trace_id, NULL::BIGINT AS event_timestamp WHERE FALSE"
-    if any(EVENTS_PATH.rglob("*.parquet")):
+    if any(events_path.rglob("*.parquet")):
         existing_event_scan = f"""
         SELECT
             event_type,
             trace_id,
             event_timestamp
-        FROM read_parquet('{events_path}/**/*.parquet', hive_partitioning = true)
+        FROM read_parquet('{events_glob}', hive_partitioning = true)
         """
 
     export_sql = f"""
@@ -60,7 +69,7 @@ def main() -> None:
             SELECT
                 trace_id,
                 min(sample_timestamp) AS event_timestamp
-            FROM read_parquet('{box_info_path}', hive_partitioning = true)
+            FROM read_parquet('{box_info_glob}', hive_partitioning = true)
             WHERE date = '{args.date}'
               AND speed_kmh > {args.speed_threshold}
             GROUP BY trace_id
@@ -74,7 +83,7 @@ def main() -> None:
                 b.lane_id,
                 b.date AS source_box_date,
                 b.hour AS source_box_hour
-            FROM read_parquet('{box_info_path}', hive_partitioning = true) AS b
+            FROM read_parquet('{box_info_glob}', hive_partitioning = true) AS b
             JOIN candidate_events AS c
               ON b.trace_id = c.trace_id
              AND b.sample_timestamp = c.event_timestamp
@@ -124,7 +133,7 @@ def main() -> None:
         WHERE x.trace_id IS NULL
         ORDER BY event_timestamp, trace_id
     )
-    TO '{events_path}'
+    TO '{events_path.as_posix()}'
     (
         FORMAT parquet,
         PARTITION_BY (event_type, date, hour),
@@ -135,19 +144,18 @@ def main() -> None:
     """
     con.execute(export_sql)
 
-    event_files = list(EVENTS_PATH.rglob("*.parquet"))
-    if event_files:
+    if any(events_path.rglob("*.parquet")):
         max_event_ts = con.execute(
             f"""
             SELECT coalesce(max(event_timestamp), 0)
-            FROM read_parquet('{events_path}/**/*.parquet', hive_partitioning = true)
+            FROM read_parquet('{events_glob}', hive_partitioning = true)
             WHERE event_type = 'overspeed'
             """
         ).fetchone()[0]
         event_count = con.execute(
             f"""
             SELECT count(*)
-            FROM read_parquet('{events_path}/**/*.parquet', hive_partitioning = true)
+            FROM read_parquet('{events_glob}', hive_partitioning = true)
             WHERE event_type = 'overspeed'
               AND date = '{args.date}'
             """
@@ -165,10 +173,38 @@ def main() -> None:
         """
     )
 
+    box_info_manifest = load_dataset_manifest(BOX_INFO_DATASET)
+    events_manifest_path = ensure_dataset_manifest(
+        EVENTS_DATASET,
+        schema_version="events.v1",
+        producer_script="04_build_events.py",
+        source_dependencies={
+            "box_info": {
+                "active_version": box_info_version,
+                "manifest": box_info_manifest,
+            },
+            "writer.duckdb": {
+                "current_version": writer_version,
+                "db_path": str(WRITER_DB_PATH),
+            },
+        },
+        note="Updated after overspeed event materialization",
+        extra={
+            "active_version": events_version,
+            "event_type": "overspeed",
+            "speed_threshold": args.speed_threshold,
+        },
+    )
+    con.close()
+
     print(
         "\n".join(
             [
-                f"events_lake={EVENTS_PATH}",
+                f"events_lake={events_path}",
+                f"events_version={events_version}",
+                f"events_manifest={events_manifest_path}",
+                f"box_info_version={box_info_version}",
+                f"writer_schema_version={writer_version}",
                 f"event_type=overspeed",
                 f"date={args.date}",
                 f"speed_threshold={args.speed_threshold}",

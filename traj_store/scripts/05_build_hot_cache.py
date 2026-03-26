@@ -7,11 +7,11 @@ from pathlib import Path
 
 import duckdb
 
+from schema_versioning import resolve_dataset_scan_glob, resolve_dataset_version_and_path
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 HOT_DB_PATH = BASE_DIR / "data" / "tmp" / "hot_day.duckdb"
-BOX_INFO_GLOB = BASE_DIR / "data" / "lake" / "box_info" / "**" / "*.parquet"
-EVENTS_GLOB = BASE_DIR / "data" / "lake" / "events" / "**" / "*.parquet"
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,15 +22,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    box_info_root = BASE_DIR / "data" / "lake" / "box_info"
-    if not any(box_info_root.rglob("*.parquet")):
-        raise SystemExit("No box_info parquet files found. Run 02_simulate_writer.py first.")
+    box_info_version, box_info_path = resolve_dataset_version_and_path("box_info")
+    if not any(box_info_path.rglob("*.parquet")):
+        raise SystemExit("No box_info parquet files found in the active dataset version. Run 02_simulate_writer.py first.")
+
+    events_version, events_path = resolve_dataset_version_and_path("events", create_if_missing=True)
 
     HOT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     day_suffix = args.date.replace("-", "")
     box_table = f"box_info_{day_suffix}"
     event_table = f"events_overspeed_{day_suffix}"
+
+    box_info_glob = resolve_dataset_scan_glob("box_info")
+    events_glob = resolve_dataset_scan_glob("events")
 
     con = duckdb.connect(str(HOT_DB_PATH))
     con.execute(
@@ -51,7 +56,7 @@ def main() -> None:
             spindle,
             lane_id,
             frame_id
-        FROM read_parquet('{BOX_INFO_GLOB.as_posix()}', hive_partitioning = true)
+        FROM read_parquet('{box_info_glob}', hive_partitioning = true)
         WHERE date = '{args.date}'
         """
     )
@@ -69,7 +74,7 @@ def main() -> None:
         """
     )
 
-    if any((BASE_DIR / "data" / "lake" / "events").rglob("*.parquet")):
+    if any(events_path.rglob("*.parquet")):
         con.execute(
             f"""
             CREATE OR REPLACE TABLE {event_table} AS
@@ -85,7 +90,7 @@ def main() -> None:
                 source_frame_id,
                 source_box_date,
                 source_box_hour
-            FROM read_parquet('{EVENTS_GLOB.as_posix()}', hive_partitioning = true)
+            FROM read_parquet('{events_glob}', hive_partitioning = true)
             WHERE event_type = 'overspeed'
               AND date = '{args.date}'
             """
@@ -98,11 +103,14 @@ def main() -> None:
         )
 
     row_count = con.execute(f"SELECT count(*) FROM {box_table}").fetchone()[0]
+    con.close()
     print(
         "\n".join(
             [
                 f"hot_db={HOT_DB_PATH}",
                 f"box_table={box_table}",
+                f"box_info_version={box_info_version}",
+                f"events_version={events_version}",
                 f"date={args.date}",
                 f"box_row_count={row_count}",
             ]
