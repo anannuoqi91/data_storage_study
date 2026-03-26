@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+traj_store/scripts/__pycache__/
+traj_store/data/backups/
+traj_store/data/benchmarks/
+traj_store/data/duckdb/*.duckdb
+traj_store/data/duckdb/*.wal
+traj_store/data/lake/**/*.parquet
+traj_store/data/tmp/*.duckdb
+traj_store/data/tmp/*.wal
