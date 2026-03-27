@@ -1,17 +1,20 @@
 # 技术路线比较结论
 
-本文只比较当前仓库里的两条主路线：
+本文比较当前仓库里的三条路线：
 
 - `traj_store`：以 `parquet_compact_zstd` 为主路径，核心形态是 `sender -> receiver -> Parquet lake`
 - `traj_store_clickhose`：以 `clickhouse_compact_zstd` 为主路径，核心形态是 `sender -> receiver -> ClickHouse MergeTree`
+- `traj_store_pg`：以 `pg_tdengine_compact + postgres_profile=bench_low_wal_compressed` 为新基线，核心形态是 `sender -> receiver -> TDengine facts + PostgreSQL hot state`
 
 ## 结论先行
 
-如果目标是“用尽量低的运行时复杂度，稳定把主落盘控制在 GiB/day 量级，并且在磁盘紧张时按时间窗口或版本快速删数据”，优先选 `traj_store`。
+如果目标是“用尽量低的运行时复杂度，把主落盘稳定控制在 GiB/day 量级，并且在磁盘紧张时按时间窗口或版本快速删数据”，优先选 `traj_store`。
 
-如果目标是“在持续 ingest 的同时，直接得到一个可在线查询的列式数据库，并愿意接受更高的资源占用、运维复杂度和容量口径复杂度”，可以选 `traj_store_clickhose`。
+如果目标是“在持续 ingest 的同时，直接得到一个可在线查询的列式数据库，并且希望主数据体积尽量小”，优先选 `traj_store_clickhose`。
 
-如果明确把“磁盘水位触发热删除”当成核心需求，当前阶段仍然更建议 `traj_store`。原因不是 ClickHouse 不能删，而是 `traj_store` 的删除边界更直观、空间回收预期更稳定、配套机制也更完整。
+`traj_store_pg` 的新基线比旧 PG 基线已经明显收敛，但从当前 benchmark 看，它仍不是第一优先级技术路线。它的适用前提是你明确需要“TDengine 承接全量时序事实 + PostgreSQL 承接控制面和热状态”这种双库分工；否则它会同时带来更高的容量成本和更高的运维复杂度。
+
+如果明确把“磁盘水位触发热删除”当成核心需求，当前阶段仍然更建议 `traj_store`。三条路线里，它的删除边界最直观，空间回收预期也最稳定。
 
 ## 当前 benchmark 依据
 
@@ -28,140 +31,180 @@
 - 5 分钟样本：`600,000` 行，`active_bytes_on_disk_post_run = 5,053,000 B`
 - 单位行大小：`8.422 B/row`
 - 一天外推：约 `1.455 GB/day`，约 `1.355 GiB/day`
+- whole `clickhouse_store/`：`60,831,181 B`，约 `17.519 GB/day`
 
-需要单独强调的是，`traj_store_clickhose` 的 `clickhouse_data_bytes_post_run = 60,831,181 B` 不能直接当主数据体积外推。这个口径包含整个 `clickhouse_store/` 数据目录，会混入：
+`traj_store_pg` 新基线 5 分钟样本：
 
-- `system.*` 日志表
-- metadata / access / preprocessed config 等系统目录
-- merge 尚未清理掉的旧 parts
+- 样本目录：`traj_store_pg/data/benchmarks/ingest_pg_low_wal_compact_5min/`
+- 5 分钟样本：`600,000` 行，`postgres_profile = bench_low_wal_compressed`
+- `tdengine_data_bytes_post_run = 34,128,431 B`，`56.881 B/row`
+- `postgres_data_bytes_post_run = 31,360,399 B`，`52.267 B/row`
+- `sink_bytes_post_run = 68,236,760 B`，`113.728 B/row`
+- 一天外推：
+  - TDengine facts：约 `9.829 GB/day`
+  - PostgreSQL 热状态和批次台账目录：约 `9.032 GB/day`
+  - whole sink：约 `19.652 GB/day`
 
-所以 ClickHouse 的主容量估算应优先看业务表 active parts，而不是整个数据目录。
+需要单独强调的是：
+
+- `traj_store_clickhose` 的主容量估算应优先看业务表 active parts，而不是整个 `clickhouse_store/`
+- `traj_store_pg` 的主容量估算应优先看 `tdengine_data_bytes_post_run`；`postgres_data_bytes_post_run` 和 `sink_bytes_post_run` 更像“整条双库路线的额外代价”
+
+## 关键数字并列
+
+### 1. 主数据净落盘
+
+| 路线 | README / benchmark 引用样本 | 5 分钟写入行数 | 主落盘口径 | 每行字节 | 一天外推 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `traj_store` `parquet_compact_zstd` | `compact_5min_10fps_200box` | `399,000` | `3,808,873 B` | `9.546 B/row` | `1.650 GB/day` |
+| `traj_store_clickhose` `clickhouse_compact_zstd` | `ingest_20260327T014603Z` | `600,000` | `5,053,000 B` active parts | `8.422 B/row` | `1.455 GB/day` |
+| `traj_store_pg` `pg_tdengine_compact` | `ingest_pg_low_wal_compact_5min` | `600,000` | `34,128,431 B` TDengine facts | `56.881 B/row` | `9.829 GB/day` |
+
+直接读这个表，结论很清楚：
+
+- 如果只比“主数据净落盘”，当前最好的是 `traj_store_clickhose`
+- `traj_store` 与 ClickHouse active parts 很接近，只大约 `13.4%`
+- `traj_store_pg` 新基线即使只看 TDengine facts，也约是 `traj_store` 的 `5.96x`，约是 ClickHouse active parts 的 `6.76x`
+
+### 2. 整条路线的目录总代价
+
+| 路线 | 整目录口径 | 每行字节 | 一天外推 | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| `traj_store` | 近似等于主 Parquet 文件集 | `9.546 B/row` | `1.650 GB/day` | 没有独立数据库服务数据目录 |
+| `traj_store_clickhose` | whole `clickhouse_store/` | `101.385 B/row` | `17.519 GB/day` | 混入 `system.*`、metadata、旧 parts |
+| `traj_store_pg` | whole sink | `113.728 B/row` | `19.652 GB/day` | 同时包含 TDengine facts、PostgreSQL 目录和日志 |
+
+这里的排序也很明确：
+
+- `traj_store` 仍然是总目录最省的一条路线
+- `traj_store_pg` 新基线虽然比旧 PG 基线明显下降，但 whole sink 仍比 ClickHouse whole store 大约 `12.2%`
+- `traj_store_pg` 的 PostgreSQL 目录本身就有约 `9.032 GB/day`，这部分是另外两条主路线没有的显式额外代价
 
 ## 核心比较
 
-### 1. 主存储形态
+### 1. 吞吐与写入稳定性
 
-`traj_store` 的本质是文件湖。
+从当前样本看，`traj_store_clickhose` 和 `traj_store_pg` 新基线都已经基本跑满 nominal `2,000 rows/s`。
 
-- 主结果是按 `date/hour` 分区的 Parquet 文件
-- 数据形态简单，跨工具可读
-- 更像“稳定落盘层”，不是常驻数据库服务
+- `traj_store_clickhose`：`avg_rows_per_second_ingest = 1,999.60`
+- `traj_store_pg` 新基线：`avg_rows_per_second_ingest = 1,999.59`
 
-`traj_store_clickhose` 的本质是数据库实例。
+`traj_store` README 当前引用样本没有跑满 nominal `2,000 rows/s`，所以如果你的首要目标是“先把持续 ingest 打满”，当前更接近同口径满载的是 ClickHouse 和 PG 双库路线。
 
-- 主结果是 ClickHouse `MergeTree` 表
-- 数据写入后立即处在可查询数据库中
-- 不只是存储层，还天然带着在线查询和后台 merge 行为
+但这里仍要注意：
 
-### 2. 吞吐与写入稳定性
+- 三份 README / benchmark 引用样本实际写入行数并不完全一致
+- 更适合比较趋势、单位行体积和运行时代价，不适合把三份短时样本当成完全严格的 A/B
 
-从当前样本看，`traj_store_clickhose` 在 ingest 吞吐上更强。
+### 2. 容量与落盘效率
 
-- 当前 5 分钟样本基本跑满 nominal `2,000 rows/s`
-- `traj_store` README 当前样本没有跑满 nominal `2,000 rows/s`
+只看主数据净落盘：
 
-这说明，如果你的首要目标是“先把持续写入稳定性打满”，ClickHouse 路线更有优势。
+- `traj_store_clickhose` 最优：`8.422 B/row`
+- `traj_store` 次之：`9.546 B/row`
+- `traj_store_pg` 新基线的 TDengine facts 明显更大：`56.881 B/row`
 
-但这里也要保持边界清晰：
+也就是说，PG 新基线虽然已经优化过 PostgreSQL 侧口径，但它并没有改变“TDengine facts 主体体积远大于 Parquet / ClickHouse active parts”这个事实。
 
-- 当前两边 README 引用的 5 分钟样本实际写入行数不同
-- 因此更适合比较趋势和单位行体积，不适合把两份短时样本当成完全同口径的严格 A/B
+如果把整条路线都算进去：
 
-### 3. 主数据容量
+- `traj_store` 的文件集大小基本就是主结果
+- `traj_store_clickhose` 的 whole store 约 `17.519 GB/day`
+- `traj_store_pg` 的 whole sink 约 `19.652 GB/day`
 
-只看主数据净落盘，当前 ClickHouse 样本略优于 Parquet 样本。
+所以从容量角度看：
 
-- `traj_store`：`9.546 B/row`
-- `traj_store_clickhose` active parts：`8.422 B/row`
+- 主数据层：`traj_store_clickhose` 最好，`traj_store` 很接近，`traj_store_pg` 明显落后
+- 整条路线：`traj_store` 最好，`traj_store_clickhose` 次之，`traj_store_pg` 仍然最重
 
-也就是说，当前 ClickHouse active parts 样本比 README 里的 Parquet 样本小约 `11.8%`。
+### 3. 资源占用
 
-但如果看“整个运行时目录”，结论会反过来：
+`traj_store` 仍然是最轻的运行形态，因为没有常驻数据库服务。
 
-- Parquet 路线的目录大小基本就是主数据大小
-- ClickHouse 路线的整目录大小会显著大于主数据，因为内部还带着系统表、元数据和旧 parts
+在两条数据库路线里，当前样本呈现的是：
 
-所以两条路线的容量口径不能混着看：
+- `traj_store_clickhose`：ClickHouse server 峰值 RSS 约 `822 MiB`，再加上 receiver 约 `36.5 MiB`
+- `traj_store_pg` 新基线：PostgreSQL + TDengine + receiver 合计峰值 RSS 约 `592 MiB`
 
-- `traj_store` 可以直接看文件集大小
-- `traj_store_clickhose` 必须区分“业务表 active parts”和“整个 ClickHouse 数据目录”
+所以从这次样本看，`traj_store_pg` 新基线的总 RSS 低于 `traj_store_clickhose`，大约是后者的 `69%`。但这里不能只看 RSS，因为它的代价是：
 
-### 4. 资源占用
+- 不是一套服务，而是两套数据库
+- 磁盘体积仍明显高于 ClickHouse active parts 和 Parquet 主路径
+- 保留、删除、备份和观测都要跨 PostgreSQL / TDengine 两边协同
 
-当前阶段，`traj_store` 更轻，`traj_store_clickhose` 更重。
-
-`traj_store` 的优势：
-
-- 没有独立数据库服务常驻
-- receiver 直接刷 Parquet，进程模型简单
-- 对单机资源更友好
-
-`traj_store_clickhose` 的代价：
-
-- 除了 Python receiver，还要常驻 ClickHouse server
-- 当前 5 分钟样本里 ClickHouse server 峰值 RSS 约 `822 MiB`
-- 后台 merge、日志表、系统元数据都会带来额外资源和磁盘开销
-
-如果你的部署环境更接近“边缘机、单机、资源紧张”，`traj_store` 更稳。
-
-### 5. 查询与下游能力
+### 4. 查询与下游能力
 
 `traj_store` 更适合做事实主存储和离线交换层。
 
-- Parquet 文件天然适合后续喂给 DuckDB、Spark、ClickHouse、对象存储
-- 但它自己不是查询服务
-- 如果要做在线分析、并发查询或二级索引，通常需要再挂一层引擎
+- 产物是 Parquet 文件，天然适合后续喂给 DuckDB、Spark、ClickHouse 或对象存储
+- 但它自己不是在线查询服务
 
 `traj_store_clickhose` 更适合把“存储 + 查询”合在一起。
 
 - 写入完成后即可直接 SQL 查询
-- 内建 `system.parts`、`query_log`、`metric_log` 等观测能力
-- 对需要快速做在线分析的场景更友好
+- 数据和查询都在同一套系统里
+- 当前三条路线里，它最像一条完整的“可持续 ingest 的在线分析库”
 
-所以如果你的目标是“写完立刻查，而且查的主体就在同一套系统里”，ClickHouse 路线更顺手。
+`traj_store_pg` 更像职责拆分后的双库路线。
 
-### 6. 热删除与空间回收
+- TDengine 管全量时序事实
+- PostgreSQL 管热状态和批次台账
+- 这种拆分对架构边界是清楚的，但也意味着查询、保留和运维不会像单库方案那样顺手
 
-如果把“磁盘空间不足时按规则删除部分数据”作为重点需求，当前更推荐 `traj_store`。
+所以如果你的目标是“写完立刻查，而且尽量留在同一套系统里查”，`traj_store_clickhose` 仍明显优于 `traj_store_pg`。
+
+### 5. 热删除与空间回收
+
+如果把“磁盘空间不足时按规则删除部分数据”作为重点需求，当前仍推荐 `traj_store`。
 
 原因有三点：
 
-- `traj_store` 当前已经采用 `version directory + active pointer` 机制，可以先切换 active 版本，再回收旧版本目录
 - `traj_store` 的主数据本身就是按 `date/hour` 分区的文件集，删除边界天然清楚
-- 删除文件后，空间回收预期直接，不依赖后台 merge 或 mutation 收敛
+- 当前项目已经围绕这条路线做了 `version directory + active pointer` 机制
+- 删除文件后，空间回收预期直接，不依赖后台 merge、compaction 或多引擎协调
 
-相对地，`traj_store_clickhose` 虽然也按小时分区，适合做基于时间分区的删除，但当前仓库只覆盖 ingest benchmark，还没有把完整的 `events` / `hot cache` / 保留策略都迁进来。并且在磁盘紧张场景下，ClickHouse 的空间回收会和 parts、merge、系统表目录一起形成更复杂的运行时行为。
+`traj_store_clickhose` 次之。
 
-结论不是 ClickHouse 不能删，而是：
+- 它按时间分区，做基于时间窗口的删除是顺手的
+- 但空间回收会和 parts、merge、系统表目录一起表现，不如文件删除直观
 
-- 如果你的删除规则主要是按时间窗口、按版本、按整批数据回收
-- 并且你需要对“什么时候真的腾出空间”有更强确定性
+`traj_store_pg` 在这件事上最复杂。
 
-那么 `traj_store` 更合适。
+- 一份数据路线拆在 PostgreSQL 和 TDengine 两边
+- 热状态、批次台账和全量事实需要分别考虑回收
+- 当前项目只覆盖 ingest benchmark，还没有完整删除治理能力
 
-如果你的删除规则是复杂的在线局部删除，而且删完后仍然希望同一套系统继续承担读写查询，那才值得为此承担 ClickHouse 方案的复杂度。
+因此，如果“热删除 + 明确的空间回收预期”是核心约束，`traj_store_pg` 不应是优先路线。
 
-## 两条路线的适用建议
+## 三条路线的适用建议
 
 建议优先选 `traj_store` 的情况：
 
 - 你把主目标定义为“低复杂度主落盘”
 - 你更关心可搬运、可归档、可离线重算
 - 你希望磁盘水位触发删除时，行为简单、边界清楚、空间回收稳定
-- 你的部署资源有限，不希望再长期维护一个数据库服务
+- 你不希望长期维护数据库服务
 
-建议考虑 `traj_store_clickhose` 的情况：
+建议优先选 `traj_store_clickhose` 的情况：
 
 - 你已经明确需要在线查询能力
 - 你希望写入后数据立即在数据库里可分析
+- 你希望主数据净落盘尽量小
 - 你愿意接受更高的 CPU / RSS / 运维复杂度
-- 你后续愿意继续补完整的保留、删除、hot cache 和运维策略
+
+建议只在特定前提下考虑 `traj_store_pg` 的情况：
+
+- 你明确想把“全量时序事实”和“热状态 / 控制面”拆到两套引擎
+- 你接受 TDengine + PostgreSQL 双库协同
+- 你接受它当前容量明显大于另外两条主路线
+- 你看重的是架构分工，而不是单纯的容量最优或删除最简单
 
 ## 最终建议
 
-站在当前仓库现状上，不是抽象讨论数据库能力，而是基于现有实现成熟度来判断：
+站在当前仓库现状上，不是抽象讨论数据库能力，而是基于现有实现成熟度和 benchmark 结果来判断：
 
 - 把“主落盘 + 容量控制 + 热删除”作为核心目标时，优先用 `traj_store`
-- 把“持续 ingest + 在线分析”作为核心目标时，再推进 `traj_store_clickhose`
+- 把“持续 ingest + 在线分析 + 同库查询”作为核心目标时，优先推进 `traj_store_clickhose`
+- `traj_store_pg` 新基线可以作为一条备选架构路线继续保留，但当前不建议把它升成第一优先级主路线
 
-换句话说，`traj_store` 更像当前阶段的稳态主路线，`traj_store_clickhose` 更像有明确上行空间、但仍需要继续补齐运行时治理能力的增强路线。
+一句话概括：`traj_store` 最稳，`traj_store_clickhose` 最像在线分析主库，`traj_store_pg` 新基线虽然比旧 PG 基线收敛明显，但目前仍更像“有特定架构诉求时才值得承担的双库方案”。
