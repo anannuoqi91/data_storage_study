@@ -1,0 +1,2 @@
+psutil>=5.9,<8
+psycopg[binary]>=3.2,<4

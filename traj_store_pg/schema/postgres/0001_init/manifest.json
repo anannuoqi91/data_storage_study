@@ -1,0 +1,5 @@
+{
+  "migration_id": "0001_init",
+  "engine": "postgresql",
+  "description": "Create PostgreSQL batch ledger and latest-state tables for traj_store_pg benchmark."
+}

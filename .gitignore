@@ -11,3 +11,4 @@ traj_store/data/lake/**/*.parquet
 traj_store/data/tmp/*.duckdb
 traj_store/data/tmp/*.wal
 traj_store_clickhose/data/*
+traj_store_pg/data/*
