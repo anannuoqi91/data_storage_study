@@ -1,0 +1,10 @@
+paths:
+  /status/current-release:
+    get:
+      summary: 当前 release
+  /status/partitions:
+    get:
+      summary: 分区状态
+  /ops/rollback:
+    post:
+      summary: 回滚 release

@@ -1,0 +1,481 @@
+syntax = "proto2";
+
+package omnividi.box;
+
+message PointXYZ {
+  optional float x = 1 [default = nan];
+  optional float y = 2 [default = nan];
+  optional float z = 3 [default = nan];
+};
+
+message Point3d {
+  optional double x = 1 [default = nan];
+  optional double y = 2 [default = nan];
+  optional double z = 3 [default = nan];
+}
+
+message Attribute {
+  optional bytes key = 1;
+  optional bytes value = 2;
+};
+
+
+message WebRegions {
+  repeated WebRegion regions = 1;
+};
+
+message RegionHole {
+  repeated PointXYZ points = 4;
+};
+
+message WebRegion {
+  optional bytes name = 1;
+  optional uint32 type = 2 ;
+  optional uint32 index = 3;
+  repeated PointXYZ points = 4;
+  repeated Attribute attributes = 5;
+  optional string opt = 6;
+  optional bool curb_flag = 7  [default = false];
+  repeated RegionHole holes = 8;
+};
+
+
+message WebRegionCitys {
+ repeated WebRegionCity citys = 1;
+};
+
+
+// message WebRegionVirtualLoop {
+//   optional bytes name = 1;
+//   optional uint32 index = 2;
+//   optional uint32 cross_id = 3;
+//   optional uint32 road_id = 4;
+//   optional uint32 lane_id = 5;
+//   optional string opt = 6;
+//   optional bool curb_flag = 7  [default = false];
+//   optional string attr_traffic_status = 8;
+//   optional PreceptAdjust attr_percept_adjust = 9;
+//   optional TrafficEvent attr_traffic_event = 10;
+//   optional string attr_traffic_jam = 11;
+//   optional PointBase triggers = 12;
+//   optional PointBase regions = 13;
+//   optional uint32  direction = 14;  // 0~7 , E~EN
+//   optional uint32 lidar_id = 15;
+// };
+
+// message WebRegionVirtualLoopJsonStr {
+//   optional bytes  json_str = 1;
+//   repeated WebRegionVirtualLoop regions = 2;
+//   optional bytes result = 3;
+// }
+
+// Virtual Loop interface
+message WebRegionCity {
+  optional bytes name = 1;
+  optional uint32 index = 2;
+  optional uint32 cross_id = 3;
+  optional uint32 road_id = 4;
+  optional uint32 lane_id = 5;
+  optional string opt = 6;
+  optional bool curb_flag = 7  [default = false];
+  optional string attr_traffic_status = 8;// "1":traffic_flow
+  optional PreceptAdjust attr_percept_adjust = 9;
+  optional TrafficEvent attr_traffic_event = 10;
+  optional string attr_traffic_jam = 11;
+  optional PointBase triggers = 12;
+  optional PointBase regions = 13;
+  optional uint32  direction = 14;  // 0~7 , E~EN
+  optional uint32 lidar_id = 15;
+  optional uint32 phase_no = 16;
+  optional string loop_name = 17;
+};
+
+
+message PointBase {
+  optional uint64 index= 1;
+  repeated PointXYZ pointxyz =2;
+};
+
+
+message TrafficEvent {
+  message OverSpeed {
+    optional double speed = 1;
+    optional uint32 time = 2;
+  }
+  message ReverseTravel {
+    repeated uint32 heading = 1;
+    optional uint32 time = 2;
+  }
+  message OverSize {
+    optional double length = 1;
+    optional double width = 2;
+    optional double height = 3;
+  }
+
+  message IllegalInstrut {
+    repeated uint32  types= 1;
+  }
+
+  optional OverSpeed overSpeed = 1;
+  optional ReverseTravel reverseTravel = 2;
+  optional OverSize overSize = 3;
+  optional IllegalInstrut illegalInstrut = 4;
+};
+
+
+message PreceptAdjust{
+  optional uint32 heading = 1;// e.g.heading:0~360
+  optional uint32 roi = 2;
+
+};
+
+
+message WebRegionsJsonStr {
+  optional bytes  json_str = 1;
+  repeated WebRegion regions = 2;
+  optional bytes result = 3;
+};
+
+message WebRegionsCityJsonStr {
+  optional bytes  json_str = 1;
+  repeated WebRegionCity regions = 2;
+  optional bytes result = 3;
+};
+
+message Zone{
+  optional uint32 lidar_id = 1;
+  optional uint32 region_idx = 2;
+  optional string zone_idx = 3;
+  optional string zone_name = 4;
+  repeated ZoneAttribute attrs = 5;
+  repeated CornerPoint points = 6;
+  optional uint64 idx = 7;
+};
+
+message CornerPoint{
+  optional double y = 1 [default = nan];
+  optional double z = 2 [default = nan];
+};
+
+message ZoneAttribute{
+  optional uint32 key = 1;
+  optional int32 value = 2; // TODO change precision
+};
+
+message ZoneList{
+  repeated Zone zones = 1;
+};
+
+message ZoneBoxes{
+  optional ZoneList zones= 1;
+  optional Boxes boxes = 2;
+  optional uint64 timestamp = 3;
+  optional uint64 lidar_timestamp = 4;
+};
+
+message WebFilter {
+  optional uint32 l_con = 1;
+  optional uint32  w_con = 2;
+  optional uint32  h_con = 3;
+  optional bytes leng = 4;
+  optional bytes  width = 5;
+  optional bytes  high = 6;
+  optional uint32 all_filter = 7;
+  optional uint32 box_type = 8;
+};
+
+message WebFiltersJsonStr {
+  optional bytes  json_str = 1;
+  repeated WebFilter filters = 2;
+  optional bytes result = 3;
+}
+
+
+message RegionAttribute {
+  optional uint32 attribute = 1;
+  // 1:heading, 2:speed, 3:trigger, 4:lane, 5:traffic flow, 6:ego-motion region, 7:weigh, 8:box stat, 9:region_roi, 10:merge_region,
+  // 11:over_speed, 12:illegal_stop 13:blind_area
+  optional int32 value = 2;
+  // heading: radian100, speed: m/s100, trigger: id, lane: id, traffic flow: id, ego-motion region: id, weigh region: id, box stat region: id
+  // region_roi : id, merge_region : id, over_speed : id, illegal_stop : id, blind_area : id
+  optional int32 iou = 3;
+  // [0, 100]
+};
+
+enum BoxAttributeType{
+  BOX_DETECTION_RATIO = 1;
+  BOX_MAINTAIN_TIME = 2;
+  BOX_DETECTION_CONDITION = 3;
+  BOX_DETECTION_QUALITY = 4;
+  BOX_HEADING_CONFIDENCE = 5;
+  BOX_POSITION_CONFIDENCE = 6;
+};
+
+message BoxAttribute{
+  optional BoxAttributeType attribute = 1;
+  optional uint32 confidence = 2;
+  optional string log = 3;
+};
+
+enum WebAttrType{
+  // REGION INFOMATION
+  REGION_IDX = 0;
+  CROSSING_NO = 1;
+  ROAD_NO = 2;
+  LANE_NO = 3;
+  ASSOCIATE_REGION_IDX = 4;
+  PHASE_NO = 5;
+
+  // TRAFFIC_STATUS_REGION
+  TRAFFIC_STATUS_TRAFFIC_FLOW = 11;
+  TRAFFIC_STATUS_HEAD_TIME = 12;
+  TRAFFIC_STATUS_VRU_FLOW_ATTRIBUTE = 13;
+  TRAFFIC_STATUS_VRU_FLOW_HEADING = 14;
+  TRAFFIC_STATUS_VRU_COUNTING_ATTRIBUTE = 15;
+  TRAFFIC_STATUS_VRU_FLOW_DIRECTION = 16; // refer to VRUFlowDirType
+  TRAFFIC_STATUS_VRU_COUNTING_PASS_TIME = 17; // ms
+
+  // TRAFFIC_EVENT_REGION
+  TRAFFIC_EVENT_OVERSPEED_SPEED = 21;// cm/s  // TODO
+  TRAFFIC_EVENT_OVERSPEED_TIME = 22;
+
+  TRAFFIC_EVENT_REVERSALTRAVEL_HEADING_LOWER = 31;// deg(0~360)
+  TRAFFIC_EVENT_REVERSALTRAVEL_HEADING_UPPER = 32;// deg(0~360)
+  TRAFFIC_EVENT_REVERSALTRAVEL_TIME = 33;// sec
+
+  TRAFFIC_EVENT_OVERSIZE_LENGTH = 41; // cm
+  TRAFFIC_EVENT_OVERSIZE_WIDTH = 42; // cm
+  TRAFFIC_EVENT_OVERSIZE_HEIGHT = 43; // cm
+
+  TRAFFIC_EVENT_ILLEGALINSTRUCT_TYPE_PED = 51;
+  TRAFFIC_EVENT_ILLEGALINSTRUCT_TYPE_NON_VEH = 52;
+  TRAFFIC_EVENT_ILLEGALINSTRUCT_TYPE_SPOIL = 53;
+  TRAFFIC_EVENT_ILLEGALINSTRUCT_TYPE_LIGHT_VEH = 54;
+  TRAFFIC_EVENT_ILLEGALINSTRUCT_TYPE_HEAVY_VEH = 55;
+
+  // TRAFFIC_JAM_REGION
+  TRAFFIC_JAM_QUEUE_LENGTH = 61;
+
+  // PRECEPT_STATUS_REGION
+  PRECEPT_STATUS_HEADING = 71;
+  PRECEPT_STATUS_ROI = 72;
+
+  // VIRTUAL LOOP ADD
+  DIRECTION = 81; // 0~7 , E~EN
+  LIDAR_ID = 91;
+
+  // SEPARATE SYMBOL
+  SEPARATE_SYMBOL = 100;
+
+  // HIGHLIGHT
+  TRAFFIC_FLOW_HIGHLIGHT_YELLOW = 110;
+  TRAFFIC_FLOW_HIGHLIGHT_GRAY = 111;
+};
+
+enum VRUFlowDirType {
+  VRU_ENTRY = 1;
+  VRU_EXIT = 2;
+};
+
+// According to MVP PRD
+enum ClassType {
+  UNKNOWN = 0;
+  PEDESTRIAN = 1;
+  CYCLIST = 2;
+  CAR = 3;
+  TRUCK = 4;
+  BUS = 5;
+};
+
+message Cov{
+  optional float cov_0 = 1;
+  optional float cov_1 = 2;
+  optional float cov_2 = 3;
+  optional float cov_3 = 4;
+  optional float cov_4 = 5;
+  optional float cov_5 = 6;
+}
+
+message Box {
+  optional uint64 timestamp = 1;  // in nano seconds
+  optional float position_x = 2;  // unit: meter
+  optional float position_y = 3;  // unit: meter
+  optional float position_z = 4;  // unit: meter
+  optional float length = 5;      // unit: meter
+  optional float width = 6;       // unit: meter
+  optional float height = 7;      // unit: meter
+  optional float pose_w = 8;
+  optional float pose_x = 9;
+  optional float pose_y = 10;
+  optional float pose_z = 11;
+  optional float speed_x = 12;      // in m/s
+  optional float speed_y = 13;      // in m/s
+  optional float speed_z = 14;      // in m/s
+  optional float acc_x = 15;        // in m/s^2
+  optional float acc_y = 16;        // in m/s^2
+  optional float acc_z = 17;        // in m/s^2
+  optional PointXYZ top_point = 18;   // in m
+  optional uint64 cluster_id = 19;  // start from 1 !!!
+  optional uint64 track_id = 20;    // start from 1 !!!
+  repeated int32 point_index = 21;  // start from 0 !!!
+  optional uint32 speed = 22;       // in cm/s
+  optional uint32 object_type = 23;
+  optional uint32 heading = 24;  // in 0.01 degree, 0 for z axis, clockwise
+
+  // use only for tracking
+  optional uint32 merged = 25;
+  optional uint32 split = 26;
+  optional uint32 age = 27;         // start from 1
+  optional uint32 priority = 28;    // [0,100]
+  optional uint32 confidence = 29;  // [0,100]
+  optional uint32 spindle = 30;     // in 0.01 degree
+  repeated RegionAttribute region_attri = 31;
+  optional double longitude = 32;
+  optional double latitude = 33;
+  optional double elevation = 34;
+  optional uint32 north_angle = 62; // in 0.01 degree
+
+  optional double trigger_front_distance = 35;
+  optional double trigger_back_distance = 36;
+  optional bool in_merge_region = 37 [default = false];
+  optional bool is_tracking = 38 ;    // 0 for not tracking,   1 for tracking
+  optional uint32 detection_source = 39 ;  //  1 for ai,  2 for cluster
+  optional float start_dis = 40 ;  // box first track distance
+  optional double abs_position_x = 41; // forward  
+  optional double abs_position_y = 42; // left  
+  optional double abs_position_z = 43; // up  
+  optional float psi = 44;
+  optional float abs_speed_x = 45; // in m/s  Used to store the length calculated by the size filter module(temporary, unit: meter).
+  optional float abs_speed_y = 46; // in m/s  Used to store the width calculated by the size filter module(temporary, unit: meter).
+  optional float abs_speed_z = 47; // in m/s  Used to store the height calculated by the size filter module(temporary, unit: meter).
+  optional uint32 threaten_level = 48;  // 0: normal objcet 1: static in road 2: staic car near curb 3: static ped at curb 4: suspended
+  optional float radius_cylinder = 49;  // use only when show cylinder for static object
+  optional float frame_duration = 50;
+  optional Cov cov = 51;
+  optional int32 direction = 52;
+  optional uint32 which_side = 53; // 0 for left curb, 1 for middle curb, 2 for right curb
+  optional float pcl_length = 54; // length of pointcloud for object
+  optional bool new_object = 55;
+  optional int32 lane = 56 [default = 999];
+  optional uint32 junction_source = 57; // 0 for hdmap, 1 for observation, 2 for inference
+  optional bool opposite_lane = 58;
+  optional int32 motion_status = 59;
+  optional uint32 label = 60;
+  optional uint32 filter_reason = 61;
+  repeated BoxAttribute attributes = 63;
+};
+
+message consumer_time{
+  optional string node_name = 1;
+  optional uint64 node_start_time = 2;
+  optional uint64 node_end_time = 3;
+  optional uint64 node_consume_time = 4;
+}
+
+message Boxes {
+  optional uint64 timestamp = 2;  // in nano seconds
+  repeated Box box = 3;
+  optional string frame_id = 4;
+  optional uint64 source_id = 5;
+  optional uint64 idx = 6;
+  optional uint64 frame_point_num = 7;  // deprecated
+  repeated consumer_time node_ct = 8;
+  optional uint64 timestamp_ms = 9;  // in ms seconds
+  optional uint32 junction_mode = 10; // 0 for FORK, 1 for RIGHT_MERGE, 2 for CROSS, 3 for UNKNOWN, 4 for LEFT_MERGE
+
+  //for mltf pose transfer(rad)
+  optional double yaw_transfer = 11[default = 0];
+  optional double pitch_transfer = 12[default = 0];
+
+  // original header fields
+  optional uint64 lidar_timestamp = 20;
+  optional double timestamp_sec = 21;
+  optional uint64 sequence_num = 22;
+  optional bool is_detected = 23 [default = true];
+};
+
+message JunctionBoxes {
+  repeated Boxes boxes = 1;
+};
+
+message Boundary {
+  required uint64 id = 1; // >= 1
+  optional uint32 age = 2;
+  optional uint32 type = 3; // 0: solid, 1: dashed, 2: reserved, 3: curb
+  optional uint32 color = 4; // 0: white, 1: yellow
+  optional uint32 position = 5; // 0: left, 1: right, 2: left left, 3: right right, 4: left curb, 5: right curb
+  optional float confidence = 6;
+  optional float long_start = 7;
+  optional float long_end = 8;
+  required double curvature_hori = 9;
+  required double curvature_change_hori = 10;
+  required float lateral_position_hori = 11;
+  required float heading_hori = 12;
+  optional double curvature_vert = 13;
+  optional double curvature_change_vert = 14;
+  optional float lateral_position_vert = 15;
+  optional float heading_vert = 16;
+  optional float boundary_width = 17;
+  optional uint32 comp_type = 18;  // 0: not composite type, 1: solid solid, 2: solid dashed, 3: dashed solid, 4: dashed dashed
+  optional uint64 timestamp = 19;
+  optional bool long_valid = 20;
+  optional float min_area = 21;
+  optional float max_area = 22;
+  optional bool area_valid = 23;
+  repeated float mean_err = 24;
+  optional float err_step = 25;
+  optional float prediction_long_end = 26;
+  optional float joint_dist = 27;
+  optional double curvature_hori_far = 28;
+  optional double curvature_change_hori_far = 29;
+  optional float lateral_position_hori_far = 30;
+  optional float heading_hori_far = 31;
+};
+
+message Lane {
+  optional uint64 id = 1;
+  optional uint64 timestamp = 2; // in nano seconds
+  required double curvature_hori = 3;
+  required double curvature_change_hori = 4;
+  required float heading_hori = 5;
+  optional double curvature_vert = 6;
+  optional double curvature_change_vert = 7;
+  optional float heading_vert = 8;
+  optional float road_width = 9;
+  optional float lateral_dist_left = 10;
+  optional float lateral_dist_right = 11;
+  required bool is_valid_hori = 12;
+  optional bool is_valid_vert = 13;
+  optional string frame_id = 14;
+  optional uint64 source_id = 15;
+  optional uint64 idx = 16;
+  optional double z_offset = 17;
+  optional uint32 situation = 18 [default = 0]; // 0: normal, 1: right exit, 2: left right exit, 4: multiple exit, 8: entry out, 16: entry in, 32: large turn, 64: construction, 128: unknown
+  optional Point3d sit_position = 19;
+};
+
+message Boundaries {
+  optional uint64 id = 1;
+  optional uint64 timestamp = 2; // in nano seconds
+  repeated Boundary boundary = 3;
+  optional string frame_id = 4;
+  optional uint64 source_id = 5;
+  optional uint64 idx = 6;
+  optional Lane lane = 7;
+  optional float max_dist = 8;
+};
+
+message AxleClass{
+  required uint64 track_id = 1; // start from 1 !!!
+  optional uint32 axle_num = 2;
+  optional float axle_num_score = 3;  // [0, 100]
+  optional int32 class_id = 4;
+  optional string class_name = 5;
+  optional float class_id_score = 6;  // [0, 100]
+};
+
+message VehicleAxleClass{
+  optional uint64 timestamp = 1; // in nano seconds
+  optional uint64 idx = 2;
+  repeated AxleClass axle_class = 3;
+};

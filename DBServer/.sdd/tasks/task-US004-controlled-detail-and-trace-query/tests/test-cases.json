@@ -1,0 +1,5 @@
+[
+  { "id": "US004-T1", "title": "detail query binds release" },
+  { "id": "US004-T2", "title": "trace lookup uses trace index" },
+  { "id": "US004-T3", "title": "active query lifecycle tracked" }
+]

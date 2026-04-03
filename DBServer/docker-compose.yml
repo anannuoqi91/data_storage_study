@@ -1,0 +1,24 @@
+services:
+  dbserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dbserver
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DBSERVER_ROOT: /data
+      DBSERVER_API_HOST: 0.0.0.0
+      DBSERVER_API_PORT: 8080
+      DBSERVER_ENABLE_MAINTENANCE: "true"
+      DBSERVER_ENABLE_CYBER_INGEST: "false"
+      DBSERVER_CYBER_DEVICE_IDS: "1,2,3,4"
+      DBSERVER_CYBER_CHANNEL_TEMPLATE: "omnisense/test/{device_id}/boxes"
+      DBSERVER_CYBER_NODE_NAME: "dbserver_cyber_ingest"
+      DBSERVER_ENABLE_JOB_WORKER: "true"
+      DBSERVER_ENABLE_EXPORT_WORKER: "false"
+      DBSERVER_PUBLISH_INTERVAL_SECONDS: "1.0"
+      DBSERVER_MAINTENANCE_INTERVAL_SECONDS: "60.0"
+    volumes:
+      - ./docker_data:/data

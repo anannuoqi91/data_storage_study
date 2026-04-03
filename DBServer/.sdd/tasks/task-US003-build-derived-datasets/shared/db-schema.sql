@@ -1,0 +1,3 @@
+-- 逻辑契约
+-- trace_index(device_id, trace_id, segment_id, min_event_time_ms, max_event_time_ms, start_frame_id, end_frame_id, row_count, state)
+-- obj_type_rollup(device_id, lane_id, bucket_start_ms, obj_type, box_count, trace_count)

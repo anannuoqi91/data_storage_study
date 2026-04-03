@@ -1,0 +1,7 @@
+paths:
+  /ops/rebuild-trace-index:
+    post:
+      summary: 重建 trace_index
+  /ops/rebuild-rollup:
+    post:
+      summary: 重建 rollup

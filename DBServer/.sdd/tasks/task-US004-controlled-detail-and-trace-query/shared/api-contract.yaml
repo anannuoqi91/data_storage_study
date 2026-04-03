@@ -1,0 +1,7 @@
+paths:
+  /query/detail:
+    get:
+      summary: 明细查询
+  /query/trace-lookup:
+    get:
+      summary: 轨迹段查询

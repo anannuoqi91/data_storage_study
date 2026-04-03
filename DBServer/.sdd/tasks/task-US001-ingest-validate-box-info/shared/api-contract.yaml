@@ -1,0 +1,4 @@
+paths:
+  /ingest/frames:
+    post:
+      summary: 接收统一帧模型

@@ -1,0 +1,4 @@
+paths:
+  /ops/seal-ready-hours:
+    post:
+      summary: 封口所有满足 watermark 的小时分区

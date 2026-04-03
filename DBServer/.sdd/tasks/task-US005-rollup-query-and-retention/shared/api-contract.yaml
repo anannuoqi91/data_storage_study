@@ -1,0 +1,7 @@
+paths:
+  /query/rollup:
+    get:
+      summary: 查询 10 分钟聚合桶
+  /ops/delete-before:
+    post:
+      summary: 执行按时间边界删除

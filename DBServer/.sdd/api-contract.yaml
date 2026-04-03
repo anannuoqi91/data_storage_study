@@ -1,0 +1,123 @@
+openapi: 3.0.3
+info:
+  title: DBServer Controlled Interface
+  version: 0.1.0
+  description: |
+    这是基于 README 第一版目标整理出的受控接口契约。
+    当前仓库主要通过 CLI 暴露这些能力，但后续 HTTP 化时应遵守同一数据契约。
+paths:
+  /status/current-release:
+    get:
+      summary: 获取当前 release 与 retention 边界
+      responses:
+        '200':
+          description: OK
+  /status/partitions:
+    get:
+      summary: 获取分区状态列表
+      responses:
+        '200':
+          description: OK
+  /query/detail:
+    get:
+      summary: 按 device_id + time_range 查询 box_info 明细
+      parameters:
+        - in: query
+          name: device_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: start_ms
+          required: true
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: end_ms
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+  /query/trace-lookup:
+    get:
+      summary: 按 device_id + trace_id 查询轨迹段
+      parameters:
+        - in: query
+          name: device_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: trace_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: start_ms
+          required: false
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: end_ms
+          required: false
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+  /query/rollup:
+    get:
+      summary: 按 device_id + time_range 查询 obj_type 聚合桶
+      parameters:
+        - in: query
+          name: device_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: start_ms
+          required: true
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: end_ms
+          required: true
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: lane_id
+          required: false
+          schema: { type: integer }
+        - in: query
+          name: obj_type
+          required: false
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+  /ops/seal-ready-hours:
+    post:
+      summary: 封口所有满足 watermark 的小时分区
+      responses:
+        '200':
+          description: OK
+  /ops/delete-before:
+    post:
+      summary: 将 retention 边界推进到指定时间点
+      requestBody:
+        required: true
+      responses:
+        '200':
+          description: OK
+  /ops/rollback:
+    post:
+      summary: 回滚到指定历史 release
+      requestBody:
+        required: true
+      responses:
+        '200':
+          description: OK
+  /ops/rebuild-trace-index:
+    post:
+      summary: 基于当前 box_info release 重建 trace_index
+      responses:
+        '200':
+          description: OK
+  /ops/rebuild-rollup:
+    post:
+      summary: 基于当前 box_info release 重建 obj_type rollup
+      responses:
+        '200':
+          description: OK

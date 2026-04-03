@@ -1,0 +1,5 @@
+[
+  { "id": "US003-T1", "title": "publish writes derived datasets" },
+  { "id": "US003-T2", "title": "trace lookup uses derived files" },
+  { "id": "US003-T3", "title": "rebuild commands create release" }
+]
